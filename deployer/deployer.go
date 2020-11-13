@@ -8,6 +8,9 @@ import (
 	seldonclientset "github.com/seldonio/seldon-core/operator/client/machinelearning.seldon.io/v1/clientset/versioned"
 	seldondeployment "github.com/seldonio/seldon-core/operator/client/machinelearning.seldon.io/v1/clientset/versioned/typed/machinelearning.seldon.io/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
+	"log"
+
 	//"k8s.io/apimachinery/pkg/fields"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/rest"
@@ -40,7 +43,6 @@ func NewDeployer(config *rest.Config, deployment *machinelearningv1.SeldonDeploy
 
 	fmt.Println("new deployment created...")
 
-
 	return Deployer{
 		namespace:  namespace,
 		name: deployment.GetObjectMeta().GetName(),
@@ -64,20 +66,28 @@ func (d *Deployer) Create(ctx context.Context) error {
 }
 
 func (d *Deployer) ScaleReplicas(ctx context.Context, numReplicas int32) error {
-	result, err := d.client.Get(ctx, d.name, metav1.GetOptions{})
-	if err != nil {
-		return errors.Wrapf(err, "could not get current deployment %s", d.name)
-	}
-	result.Spec.Replicas = int32Ptr(numReplicas)
-	_, updateErr := d.client.Update(ctx, result, metav1.UpdateOptions{})
-	if updateErr != nil {
-		return errors.Wrapf(updateErr, "could not update deployment %s", d.name)
-	}
-	return nil
+	fmt.Println("scaling replicas...")
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		result, getErr := d.client.Get(ctx, d.name, metav1.GetOptions{})
+		if getErr != nil {
+			return errors.Wrapf(getErr, "could not get current deployment %s", d.name)
+		}
+		result.Spec.Replicas = int32Ptr(numReplicas)
+		_, updateErr := d.client.Update(ctx, result, metav1.UpdateOptions{})
+		if updateErr != nil {
+			log.Printf("could not update deployment %s\n", d.name)
+			// Return the error as it implements the APIStatus interface and will allow for retries on conflict
+			// In particular, we expect the intermittent error: "Operation cannot be fulfilled on ... : the object has been modified; please apply your changes to the latest version and try again"
+			// This is because between client.Get and client.Update, the SeldonDeployment could be modified.
+			// Retrying ensures the latest SeldonDeployment is updated
+			return updateErr
+		}
+		return nil
+	})
 }
 
 func (d *Deployer) Delete(ctx context.Context) error {
-	fmt.Println("deleting deployment")
+	fmt.Println("deleting deployment...")
 	delPolicy := metav1.DeletePropagationBackground
 	delOptions := metav1.DeleteOptions{
 		PropagationPolicy:  &delPolicy,

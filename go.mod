@@ -3,6 +3,7 @@ module seldon_test
 go 1.14
 
 require (
+	github.com/akamensky/argparse v1.2.2
 	github.com/pkg/errors v0.9.1
 	github.com/seldonio/seldon-core/operator v0.0.0-20200924151300-70a36cdbfbf7
 	github.com/sergi/go-diff v1.0.0
