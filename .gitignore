@@ -1,0 +1,5 @@
+.idea
+.vscode
+*.yaml
+*.json
+!seldon_deployment.json
