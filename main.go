@@ -1,23 +1,19 @@
 package main
 
 import (
-	"context"
 	"github.com/pkg/errors"
 	machinelearningv1 "github.com/seldonio/seldon-core/operator/apis/machinelearning.seldon.io/v1"
 	"io/ioutil"
 	"k8s.io/client-go/tools/clientcmd"
-	"log"
+	log "github.com/sirupsen/logrus"
 	"os"
 	"seldon_test/deployer"
-	"seldon_test/logger"
 	"seldon_test/parse"
-	"time"
 )
 
 func logWithTrace(err error) {
 	if err != nil {
-
-		log.Printf("%+v", errors.WithStack(err))
+		log.Errorf("%+v", errors.WithStack(err))
 	}
 }
 
@@ -30,36 +26,19 @@ func main() {
 	config, err := clientcmd.BuildConfigFromFlags("", *args.Kubeconfig)
 	logWithTrace(err)
 
-	deployment, err := getSeldonDeployment("./seldon_deployment.json")
-
-	ctx, _ := context.WithTimeout(context.Background(), time.Second * 160)
-
-	customResourceDeployer, err := deployer.NewDeployer(config, deployment)
+	deployment, err := getSeldonDeployment(*args.DeployConfig)
 	logWithTrace(err)
 
-	informer := logger.NewLogger(*customResourceDeployer.GetClientSet(), *args.Debug)
-
-	err = customResourceDeployer.Create(ctx)
+	customResourceDeployer, err := deployer.NewDeployer(config, deployment, *args.Debug)
 	logWithTrace(err)
 
-	informer.First.RegisterFunc(func() error {
-		err := customResourceDeployer.ScaleReplicas(ctx, 2)
-		return err
+	customResourceDeployer.RunInstructions([]deployer.DeploymentInstruction{
+		&deployer.Create{},
+		&deployer.ScaleReplicas{NumReplicas: 2},
+		&deployer.Delete{},
 	})
-
-	informer.Second.RegisterFunc(func() error {
-		err := customResourceDeployer.Delete(ctx)
-		return err
-	})
-
-	informer.Third.RegisterFunc(func() error {
-		informer.Stop()
-		return err
-	})
-
-	go informer.Run()
-
-	informer.WaitTillEnd()
+	logWithTrace(err)
+	log.Warn(deployer.MileStoneLog("HELLO"))
 }
 
 func getSeldonDeployment(filepath string) (*machinelearningv1.SeldonDeployment, error) {

@@ -17,6 +17,7 @@ type ClientParser struct {
 
 type ClientArgs struct {
 	Kubeconfig *string
+	DeployConfig *string
 	Debug      *bool
 }
 
@@ -38,8 +39,11 @@ func NewClientParser() ClientParser {
 		kubeConfigArgOptions.Required = true
 	}
 
-	args.Kubeconfig = parser.String("c", "config", kubeConfigArgOptions)
-
+	args.Kubeconfig = parser.String("k", "kubeconfig", kubeConfigArgOptions)
+	args.DeployConfig = parser.String("c", "config",  &argparse.Options{
+		Default: "./seldon_deployment_2.yaml",
+		Help:    "file path to deployment yaml/json file",
+	})
 	args.Debug = parser.Flag("d", "debug", &argparse.Options{
 		Default: false,
 		Help:    "debug flag. Warning: will be very spammy, only enable for debugging purposes",

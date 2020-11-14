@@ -7,25 +7,26 @@ import (
 	machinelearningv1 "github.com/seldonio/seldon-core/operator/apis/machinelearning.seldon.io/v1"
 	seldonclientset "github.com/seldonio/seldon-core/operator/client/machinelearning.seldon.io/v1/clientset/versioned"
 	seldondeployment "github.com/seldonio/seldon-core/operator/client/machinelearning.seldon.io/v1/clientset/versioned/typed/machinelearning.seldon.io/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/util/retry"
-	"log"
-
-	//"k8s.io/apimachinery/pkg/fields"
+	log "github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/rest"
+	"time"
 )
 
 // TODO: Keep Deployer instance alive until events are finished
 type Deployer struct {
-	namespace  string
 	name       string
-	clientset  *seldonclientset.Clientset
+	eventChan  chan Event
+	replyChan  chan error
+	observer   *ObserverV2
 	deployment *machinelearningv1.SeldonDeployment        // Schema/State of deployment
 	client     seldondeployment.SeldonDeploymentInterface // Equivalent to kubernetes.DeploymentInterface
 }
 
-func NewDeployer(config *rest.Config, deployment *machinelearningv1.SeldonDeployment) (deployer Deployer, err error) {
+func NewDeployer(config *rest.Config, deployment *machinelearningv1.SeldonDeployment, debug bool) (deployer *Deployer, err error) {
+	if debug {
+		log.SetLevel(log.DebugLevel)
+	}
 	clientset, err := seldonclientset.NewForConfig(config)
 	if err != nil {
 		return deployer, errors.Wrapf(err, "could not create new Seldon ClientSet")
@@ -34,6 +35,7 @@ func NewDeployer(config *rest.Config, deployment *machinelearningv1.SeldonDeploy
 	namespace := deployment.GetNamespace()
 	if namespace == "" {
 		namespace = v1.NamespaceDefault
+		log.Warn(ThisNeedsAttentionLog("namespace was not provided. Using default namespace"))
 	}
 	if deployment.GetObjectMeta().GetName() == "" {
 		return deployer, fmt.Errorf("deployment cannot have empty metadata.name")
@@ -41,87 +43,91 @@ func NewDeployer(config *rest.Config, deployment *machinelearningv1.SeldonDeploy
 
 	client := clientset.MachinelearningV1().SeldonDeployments(namespace)
 
-	fmt.Println("new deployment created...")
+	// TODO: Have separate loggers for Deployer and Observer?
+	log.Info("New deployment created...")
 
-	return Deployer{
-		namespace:  namespace,
+	deployer = &Deployer{
 		name:       deployment.GetObjectMeta().GetName(),
-		clientset:  clientset,
 		deployment: deployment,
 		client:     client,
-	}, nil
+		eventChan:  make(chan Event),
+		replyChan:  make(chan error),
+	}
+
+	deployer.observer = NewObserver(clientset)
+	return deployer, nil
 }
 
-func (d *Deployer) GetClientSet() *seldonclientset.Clientset {
-	return d.clientset
+func (d *Deployer) RunInstructions(instructions []DeploymentInstruction) error {
+	ctx, cancelFunc := context.WithTimeout(context.Background(), 60*time.Second)
+	// This should mean that the observers which hold this context will gracefully exit once all instrructions
+	// have been executed
+	defer cancelFunc()
+
+	d.observer.NotifyFunc = func(event Event) error {
+		return d.notifyFunc(ctx, event)
+	}
+	d.observer.ErrorFunc = func() {
+		ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+		// Ignore error and just send delete call
+		deleteFinalizer := Delete{}
+		err := deleteFinalizer.Do(ctx, d)
+		log.Errorf("got an error while cleaning up: %s", err)
+	}
+	go d.observer.Run()
+
+	log.Info(EventLog("Start running instructions"))
+	for _, instruction := range instructions {
+		err := d.executeInstruction(ctx, instruction)
+		if err != nil {
+			return err
+		}
+	}
+	log.Info(EventLog("Instructions have been run successfully"))
+	return nil
 }
 
-func (d *Deployer) Create(ctx context.Context) error {
-	fmt.Println("creating deployment...")
-	_, err := d.client.Create(ctx, d.deployment, metav1.CreateOptions{})
+func (d *Deployer) executeInstruction(ctx context.Context, instruction DeploymentInstruction) error {
+	err := instruction.Do(ctx, d)
 	if err != nil {
-		return errors.Wrapf(err, "could not create deployment")
+		return errors.Wrapf(err, "failed to carry out instruction")
+	}
+	err = d.waitForSpecificEvent(ctx, instruction.Done)
+	if err != nil {
+		return errors.Wrapf(err, "instruction error-ed before finishing")
 	}
 	return nil
 }
 
-func (d *Deployer) ScaleReplicas(ctx context.Context, numReplicas int32) error {
-	fmt.Println("scaling replicas...")
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		result, getErr := d.client.Get(ctx, d.name, metav1.GetOptions{})
-		if getErr != nil {
-			return errors.Wrapf(getErr, "could not get current deployment %s", d.name)
-		}
-		result.Spec.Replicas = int32Ptr(numReplicas)
-		_, updateErr := d.client.Update(ctx, result, metav1.UpdateOptions{})
-		if updateErr != nil {
-			log.Printf("could not update deployment %s\n", d.name)
-			// Return the error as it implements the APIStatus interface and will allow for retries on conflict
-			// In particular, we expect the intermittent error: "Operation cannot be fulfilled on ... : the object has been modified; please apply your changes to the latest version and try again"
-			// This is because between client.Get and client.Update, the SeldonDeployment could be modified.
-			// Retrying ensures the latest SeldonDeployment is updated
-			return updateErr
-		}
-		return nil
-	})
-}
-
-func (d *Deployer) Delete(ctx context.Context) error {
-	fmt.Println("deleting deployment...")
-	delPolicy := metav1.DeletePropagationBackground
-	delOptions := metav1.DeleteOptions{
-		PropagationPolicy: &delPolicy,
+func (d *Deployer) notifyFunc(ctx context.Context, event Event) error {
+	if event.Deployment == nil {
+		return fmt.Errorf("received an event with nil Deployment")
 	}
-	if err := d.client.Delete(ctx, d.name, delOptions); err != nil {
-		return errors.Wrapf(err, "failed to delete deployment")
+	select {
+	case d.eventChan <- event:
+	case <-ctx.Done():
+		log.Errorf("received an event with nil Deployment")
+		return fmt.Errorf("deployment context cancelled")
 	}
 	return nil
 }
 
-func (d *Deployer) Finish(ctx context.Context) {
-	err := d.Delete(ctx)
-	if err != nil {
-		fmt.Printf("%+v\n", errors.WithStack(err))
+func (d *Deployer) waitForSpecificEvent(ctx context.Context, condition func(Event) (bool, error)) error {
+	for {
+		select {
+		case event := <-d.eventChan:
+			conditionSatisfied, err := condition(event)
+			if err != nil {
+				return err
+			} else if conditionSatisfied {
+				return nil
+			}
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while trying to satisfy event condition")
+		}
 	}
 }
 
 func int32Ptr(i int32) *int32 {
 	return &i
-}
-
-// TODO: These boolean functions are weird. I want the deployer to control these definitions
-func createResourcesAreAvailable(deploy *machinelearningv1.SeldonDeployment) bool {
-	if deploy.Status.State != machinelearningv1.StatusStateAvailable {
-		return false
-	}
-	return true
-}
-
-func replicasHaveBeenScaled(deploy *machinelearningv1.SeldonDeployment) bool {
-	if deploy.Spec.Replicas != nil {
-		if *deploy.Spec.Replicas == int32(2) { //TODO: Change this to be configurable
-			return true
-		}
-	}
-	return false
 }
