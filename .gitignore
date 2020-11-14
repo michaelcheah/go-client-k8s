@@ -3,3 +3,4 @@
 *.yaml
 *.json
 !seldon_deployment.json
+!seldon_deployment_2.yaml
