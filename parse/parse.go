@@ -41,7 +41,7 @@ func NewClientParser() ClientParser {
 
 	args.Kubeconfig = parser.String("k", "kubeconfig", kubeConfigArgOptions)
 	args.DeployConfig = parser.String("c", "config",  &argparse.Options{
-		Default: "./seldon_deployment_2.yaml",
+		Default: "./seldon_deployment.json",
 		Help:    "file path to deployment yaml/json file",
 	})
 	args.Debug = parser.Flag("d", "debug", &argparse.Options{

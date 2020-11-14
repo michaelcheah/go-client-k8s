@@ -7,8 +7,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	log "github.com/sirupsen/logrus"
 	"os"
-	"seldon_test/deployer"
-	"seldon_test/parse"
+	"go-client-k8s/deployer"
+	"go-client-k8s/parse"
 )
 
 func logWithTrace(err error) {
@@ -32,13 +32,12 @@ func main() {
 	customResourceDeployer, err := deployer.NewDeployer(config, deployment, *args.Debug)
 	logWithTrace(err)
 
-	customResourceDeployer.RunInstructions([]deployer.DeploymentInstruction{
+	err = customResourceDeployer.RunInstructions([]deployer.DeploymentInstruction{
 		&deployer.Create{},
 		&deployer.ScaleReplicas{NumReplicas: 2},
 		&deployer.Delete{},
 	})
 	logWithTrace(err)
-	log.Warn(deployer.MileStoneLog("HELLO"))
 }
 
 func getSeldonDeployment(filepath string) (*machinelearningv1.SeldonDeployment, error) {

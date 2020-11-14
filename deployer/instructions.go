@@ -10,7 +10,9 @@ import (
 )
 
 /*
-DeploymentInstruction provides an interface for
+DeploymentInstruction provides an interface for describing instructions that required two distinct stages
+1. Do describes the actual instruction that is carried out by the deployer
+2. Done describes how events should be consumed in order to determine if the instruction has already been "done"
  */
 type DeploymentInstruction interface {
 	Do(context.Context, *Deployer) error
@@ -19,10 +21,11 @@ type DeploymentInstruction interface {
 
 // TODO: These can be extended to be richer and contain more fields.
 // TODO: More instructions can be added as needed. The don't even need to be deployment instructions
-// e.g. Prompt? Or allow for model to be served?
+// e.g. Prompt? Or allow for model to be served, e.g. Serve?
 type Create struct{}
 type Delete struct{}
 type ScaleReplicas struct {
+	count int
 	NumReplicas int32
 }
 
@@ -44,6 +47,7 @@ func (c *Create) Done(event Event) (bool, error) {
 	return false, nil
 }
 
+// TODO: Something doesn't seem right here. I've probably not done this right.
 func (s *ScaleReplicas) Do(ctx context.Context, d *Deployer) error {
 	log.Infof(ActionLog("Scaling replicas to %d...", s.NumReplicas))
 	// This should not exit until either successful or non-conflict error occurs
@@ -74,7 +78,7 @@ func (s *ScaleReplicas) Done(event Event) (bool, error) {
 	deploy := event.Deployment
 	if deploy.Spec.Replicas != nil {
 		if *deploy.Spec.Replicas == s.NumReplicas {
-			log.Info(MileStoneLog("Replicas have been scaled to %d", s.NumReplicas))
+			log.Info(MileStoneLog("Replicas have been scaled to %d", *deploy.Spec.Replicas))
 			return true, nil
 		}
 	}

@@ -43,11 +43,9 @@ type ObserverV2 struct { // TODO: Rename this to Observer. Weird IDE bug
 }
 
 func NewObserver(clientset *seldonclientset.Clientset) *ObserverV2 {
-	informerFactory := seldonfactory.NewSharedInformerFactory(clientset, 30*time.Second)
+	informerFactory := seldonfactory.NewSharedInformerFactory(clientset, 10*time.Second)
 	deploymentInformer := informerFactory.Machinelearning().V1().SeldonDeployments().Informer()
-
 	stopContext, cancelFunc := context.WithCancel(context.Background())
-
 	observer := &ObserverV2{
 		factory:          informerFactory,
 		stopInformerChan: make(chan struct{}),
@@ -109,7 +107,8 @@ func (o ObserverV2) notifyLoop() error {
 }
 
 func (o *ObserverV2) sendToNotifyLoop(event Event) {
-	log.Infof(DescriptionLog("[KUBERNETES EVENT] [Deployment %s] %s", event.Type, event.Deployment.Status.Description))
+	// TODO: Figure out what's the best way to log kubernetes events?
+	log.Infof(DescriptionLog("[KUBERNETES EVENT] [Deployment %s] %v", event.Type, event.Deployment.Status.State))
 	select {
 	case o.notifyChan <- event:
 	case <-o.stopContext.Done():
