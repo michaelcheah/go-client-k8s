@@ -18,11 +18,11 @@ import (
 
 // TODO: Keep Deployer instance alive until events are finished
 type Deployer struct {
-	namespace        string
-	name string
-	clientset *seldonclientset.Clientset
-	deployment       *machinelearningv1.SeldonDeployment        // schema
-	client           seldondeployment.SeldonDeploymentInterface // Equivalent to kubernetes.DeploymentInterface
+	namespace  string
+	name       string
+	clientset  *seldonclientset.Clientset
+	deployment *machinelearningv1.SeldonDeployment        // Schema/State of deployment
+	client     seldondeployment.SeldonDeploymentInterface // Equivalent to kubernetes.DeploymentInterface
 }
 
 func NewDeployer(config *rest.Config, deployment *machinelearningv1.SeldonDeployment) (deployer Deployer, err error) {
@@ -45,8 +45,8 @@ func NewDeployer(config *rest.Config, deployment *machinelearningv1.SeldonDeploy
 
 	return Deployer{
 		namespace:  namespace,
-		name: deployment.GetObjectMeta().GetName(),
-		clientset: clientset,
+		name:       deployment.GetObjectMeta().GetName(),
+		clientset:  clientset,
 		deployment: deployment,
 		client:     client,
 	}, nil
@@ -90,7 +90,7 @@ func (d *Deployer) Delete(ctx context.Context) error {
 	fmt.Println("deleting deployment...")
 	delPolicy := metav1.DeletePropagationBackground
 	delOptions := metav1.DeleteOptions{
-		PropagationPolicy:  &delPolicy,
+		PropagationPolicy: &delPolicy,
 	}
 	if err := d.client.Delete(ctx, d.name, delOptions); err != nil {
 		return errors.Wrapf(err, "failed to delete deployment")
@@ -107,4 +107,21 @@ func (d *Deployer) Finish(ctx context.Context) {
 
 func int32Ptr(i int32) *int32 {
 	return &i
+}
+
+// TODO: These boolean functions are weird. I want the deployer to control these definitions
+func createResourcesAreAvailable(deploy *machinelearningv1.SeldonDeployment) bool {
+	if deploy.Status.State != machinelearningv1.StatusStateAvailable {
+		return false
+	}
+	return true
+}
+
+func replicasHaveBeenScaled(deploy *machinelearningv1.SeldonDeployment) bool {
+	if deploy.Spec.Replicas != nil {
+		if *deploy.Spec.Replicas == int32(2) { //TODO: Change this to be configurable
+			return true
+		}
+	}
+	return false
 }
